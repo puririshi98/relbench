@@ -1,16 +1,15 @@
 import os
 import time
-
 from typing import Dict, Union
+
 import duckdb
 import pandas as pd
 import pyarrow as pa
 import pyarrow.json
-
-from rtb.data.table import Table
 from rtb.data.database import Database
-from rtb.data.task import TaskType, Task
 from rtb.data.dataset import Dataset
+from rtb.data.table import Table
+from rtb.data.task import Task, TaskType
 from rtb.utils import download_url, unzip
 
 
@@ -20,6 +19,7 @@ class ChurnTask(Task):
 
     def __init__(self):
         super().__init__(
+            input_cols=["window_min_time", "window_max_time", "customer_id"],
             target_col="churn",
             task_type=TaskType.BINARY_CLASSIFICATION,
             window_sizes=[pd.Timedelta("52W")],
@@ -28,6 +28,7 @@ class ChurnTask(Task):
 
     def make_table(self, db: Database, time_window_df: pd.DataFrame) -> Table:
         product = db.tables["product"].df
+        customer = db.tables["customer"].df
         review = db.tables["review"].df
 
         df = duckdb.sql(
@@ -63,6 +64,7 @@ class LTVTask(Task):
 
     def __init__(self):
         super().__init__(
+            input_cols=["window_min_time", "window_max_time", "customer_id"],
             target_col="ltv",
             task_type=TaskType.REGRESSION,
             window_sizes=[pd.Timedelta("52W")],
@@ -71,6 +73,7 @@ class LTVTask(Task):
 
     def make_table(self, db: Database, time_window_df: pd.DataFrame) -> Table:
         product = db.tables["product"].df
+        customer = db.tables["customer"].df
         review = db.tables["review"].df
 
         df = duckdb.sql(
@@ -115,7 +118,7 @@ class ProductDataset(Dataset):
 
     def __init__(
         self,
-        root: str | os.PathLike,
+        root: Union[str, os.PathLike],
         process=False,
         category: str = "books",
         use_5_core: bool = True,

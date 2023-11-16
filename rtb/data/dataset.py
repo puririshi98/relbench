@@ -2,7 +2,7 @@ import os
 import shutil
 import time
 from pathlib import Path
-from typing import Any, Dict, Union, Optional
+from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -19,7 +19,9 @@ class Dataset:
     # name of dataset, to be specified by subclass
     name: str
 
-    def __init__(self, root: str | os.PathLike, process=False, download=False) -> None:
+    def __init__(
+        self, root: Union[str, os.PathLike], process=False, download=False
+    ) -> None:
         r"""Initializes the dataset.
 
         process=True wil force pre-processing data from raw files.
@@ -69,12 +71,8 @@ class Dataset:
         else:
             # download
             if download or not Path(f"{process_path}/done").exists():
-                url = f"http://ogb-data.stanford.edu/data/rtb/{self.name}.zip"
-                # TODO: should be Path(f"{root}/{self.name}/") but that will break
-                # current workflow for grant dataset
-                # TODO: fix it together with a new zip file
-                download_path = download_url(url, root)
-                unzip(download_path, root)
+                self.download_processed(process_path)
+                Path(f"{process_path}/done").touch()
 
             # load database
             self._db = Database.load(process_path)
@@ -86,6 +84,24 @@ class Dataset:
         self.train_max_time, self.val_max_time = self.get_cutoff_times()
 
         self.tasks = self.get_tasks()
+
+    def download_raw(self, path: Union[str, os.PathLike]) -> None:
+        """Downloads the raw data to the path directory. For our
+        datasets, we will download from stanford URL, but we should keep it as
+        a function for Dataset subclasses to override if required."""
+
+        raise NotImplementedError
+
+    def download_processed(self, path: Union[str, os.PathLike]) -> None:
+        """Downloads the processed data to the path directory. For our
+        datasets, we will download from stanford URL, but we should keep it as
+        a function for Dataset subclasses to override if required."""
+        url = f"http://ogb-data.stanford.edu/data/rtb/{self.name}.zip"
+        # TODO: should be Path(f"{root}/{self.name}/") but that will break
+        # current workflow for grant dataset
+        # TODO: fix it together with a new zip file
+        download_path = download_url(url, root)
+        unzip(download_path, root)
 
     def __repr__(self) -> str:
         return (
@@ -99,13 +115,13 @@ class Dataset:
             f")"
         )
 
-    def get_tasks(self) -> dict[str, Task]:
+    def get_tasks(self) -> Dict[str, Task]:
         r"""Returns a list of tasks defined on the dataset. To be implemented
         by subclass."""
 
         raise NotImplementedError
 
-    def get_cutoff_times(self) -> tuple[pd.Timestamp, pd.Timestamp]:
+    def get_cutoff_times(self) -> Tuple[pd.Timestamp, pd.Timestamp]:
         r"""Returns the train and val cutoff times. To be implemented by
         subclass, but can implement a sensible default strategy here."""
 
@@ -113,7 +129,7 @@ class Dataset:
         val_max_time = self.min_time + 0.9 * (self.max_time - self.min_time)
         return train_max_time, val_max_time
 
-    def download_raw(self, path: str | os.PathLike) -> None:
+    def download_raw(self, path: Union[str, os.PathLike]) -> None:
         r"""Downloads the raw data to the path directory. To be implemented by
         subclass."""
 
@@ -169,6 +185,11 @@ class Dataset:
         return db
 
     @property
+    def db(self) -> Database:
+        r"""The full database. Use with caution to prevent temporal leakage."""
+        return self._db
+
+    @property
     def db_train(self) -> Database:
         return self._db.time_cutoff(self.train_max_time)
 
@@ -189,7 +210,9 @@ class Dataset:
         time_window_df obtained by their sampling strategy."""
 
         if time_window_df is None:
-            assert window_size is not None
+            if window_size is None:
+                window_size = self.tasks[task_name].window_sizes[0]
+
             # default sampler
             time_window_df = rolling_window_sampler(
                 self.min_time,
@@ -214,7 +237,9 @@ class Dataset:
         time_window_df obtained by their sampling strategy."""
 
         if time_window_df is None:
-            assert window_size is not None
+            if window_size is None:
+                window_size = self.tasks[task_name].window_sizes[0]
+
             # default sampler
             time_window_df = one_window_sampler(
                 self.train_max_time,
@@ -224,8 +249,14 @@ class Dataset:
         task = self.tasks[task_name]
         return task.make_table(self.db_val, time_window_df)
 
-    def make_test_table(self, task_name: str, window_size: int) -> Table:
+    def make_test_table(
+        self,
+        task_name: str,
+        window_size: Optional[int] = None,
+    ) -> Table:
         r"""Returns the test table for a task."""
+        if window_size is None:
+            window_size = self.tasks[task_name].window_sizes[0]
 
         task = self.tasks[task_name]
         time_window_df = one_window_sampler(
@@ -234,15 +265,7 @@ class Dataset:
         )
         table = task.make_table(self._db, time_window_df)
 
-        # TODO: need to hide all other columns
-        # we do add extra columns with meta info for analysis!
-        # hide the label information
-        df = table.df
-        df.drop(columns=[task.target_col], inplace=True)
-        table.df = df
-        return table
+        # mask out non-input cols to prevent any info leakage
+        table.df = table.df[task.input_cols]
 
-    def get_stype_proposal(self) -> Dict[str, Dict[str, Any]]:
-        r"""Returns a proposal of mapping column names to their semantic
-        types, to be further consumed by :obj:`pytorch-frame`."""
-        raise NotImplementedError
+        return table
